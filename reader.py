@@ -1,9 +1,9 @@
 
 import util
 
-with open("current.hxp", "rb") as f: data = f.read()
+with open("701.him", "rb") as f: data = f.read()
 
-decoded_data = util.try_decode_utf8(data)
+decoded_data = util.find_possible_shitjis(data)
 
-
+print(decoded_data)
 
