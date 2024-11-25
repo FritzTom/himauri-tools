@@ -1,11 +1,16 @@
+
 import os
 
+
 def extract_text_between_bytes(content):
-    start_bytes = bytes([0xFF, 0x01, 0x00, 0x01, 0x5C, 0x6E])
+    start_bytes = b"\xff\x01\x00\x01"
+    header_end_bytes = b"\x5c\x6e"
+    # start_bytes = bytes([0xFF, 0x01, 0x00, 0x01, 0x5C, 0x6E])
     end_bytes = bytes([0x00, 0x00, 0x0A, 0x0D])
     
     extracted_texts = []
     positions = []
+    names = []
 
         
     start_index = 0
@@ -13,30 +18,37 @@ def extract_text_between_bytes(content):
         start_index = content.find(start_bytes, start_index)
         if start_index == -1:
             break
-
         start_index += len(start_bytes)
+        new_start_index = content.find(header_end_bytes, start_index)
+        if new_start_index == -1:
+            break
+        name = content[start_index:new_start_index]
+        start_index = new_start_index
+
+        start_index += len(header_end_bytes)
         end_index = content.find(end_bytes, start_index)
         if end_index == -1:
             break
 
+        names.append(name.decode('shift_jis'))
         extracted_text = content[start_index:end_index]
         extracted_texts.append(extracted_text.decode('shift_jis', errors='ignore'))
         positions.append((start_index, end_index))
         start_index = end_index + len(end_bytes)
 
-    return extracted_texts, positions
+    return extracted_texts, positions, names
 
-def edit_texts(texts, positions):
+def edit_texts(texts, positions, names):
     print("Extracted Texts:")
     for i, text in enumerate(texts):
-        print(f"{i + 1} <{hex(positions[i][0])} ({positions[i][0]})>: {text}")
+        print(f"{i} <{hex(positions[i][0])} ({positions[i][0]})>: {('<' + names[i] + '>') if names[i] else ''} {text}")
 
     choice = input("Enter the number of the text you want to edit (or 'q' to quit): ")
     if choice.lower() == 'q':
         return None
 
     try:
-        index = int(choice) - 1
+        index = int(choice)
         if 0 <= index < len(texts):
             new_text = input("Enter the new text: ")
             return index, new_text
@@ -45,19 +57,7 @@ def edit_texts(texts, positions):
     
     return None
 
-def write_changes(file_path, positions, new_texts):
-    with open(file_path, 'rb+') as file:
-        content = file.read()
-        for (index, new_text), (start_index, end_index) in zip(new_texts, positions):
-            # Replace the old text with the new text
-            content = content[:start_index] + new_text + content[end_index:]
-        
-        file.seek(0)
-        file.write(content)
-        file.truncate()  # Ensure the file is not longer than the new content
-
-
-def update_string(content, extracted_texts, positions, index, new_text):
+def update_string(content, extracted_texts, positions, index, new_text, names):
     old_positions = positions[index]
     old_offset = old_positions[0]
     old_length = old_positions[1] - old_positions[0]
@@ -87,21 +87,37 @@ def update_string(content, extracted_texts, positions, index, new_text):
     string_offsets = []
     for i in range(len(string_offsets_raw) // 3):
         string_offsets.append(int.from_bytes(string_offsets_raw[i * 3:(i + 1) * 3], "big"))
-    print(string_offsets)
 
     if len(string_offsets) != number_offsets:
         print("Incorrect number of offsets!")
         exit(1)
 
+    print(f"Found {number_offsets} offsets total.")
+
+    string_offsets_mapping = get_string_offset_mapping(string_offsets, positions, extracted_texts, names)
+
     string_offsets.reverse()
+
+    changed_offsets = []
+    changed_string_index = -1
 
     for i in range(len(string_offsets)):
         current = string_offsets[i]
         if current < old_offset:
+            changed_string_index = number_offsets - i - 1
             break
         string_offsets[i] += offset_offset
+        changed_offsets.append(number_offsets - i - 1)
 
     string_offsets.reverse()
+
+    for i in range(len(string_offsets)):
+        current_text = string_offsets_mapping.get(string_offsets[i] - (offset_offset if i in changed_offsets else 0), "")
+
+        print(f"{('Name: ' + current_text[1] + ', ') if current_text else ''}{string_offsets[i] - (offset_offset if i in changed_offsets else 0)}\
+{(' -> ' + str(string_offsets[i])) if i in changed_offsets else ''} ({i})\
+{(' : ' + current_text[0]) if current_text else ''}{(' -> ' + new_text) if changed_string_index == i else ''}")
+
 
     string_offsets_raw = b''
 
@@ -116,6 +132,18 @@ def update_string(content, extracted_texts, positions, index, new_text):
 
     return content
 
+def get_string_offset_mapping(offsets, string_offsets, extracted_strings, names):
+    mapping = {}
+    for i in range(len(offsets)):
+        current_offset = offsets[i]
+        next_offset = 999999999
+        if (i + 1) < len(offsets): next_offset = offsets[i + 1]
+        for j in range(len(string_offsets)):
+            current_string = string_offsets[j][0]
+            if current_offset <= current_string < next_offset:
+                mapping[current_offset] = (extracted_strings[j], names[j])
+
+    return mapping
 
 def main(prefix = None):
     while True:
@@ -129,7 +157,7 @@ def main(prefix = None):
         with open(file_path, "rb") as f:
             content = f.read()
 
-        extracted_texts, positions = extract_text_between_bytes(content)
+        extracted_texts, positions, names = extract_text_between_bytes(content)
 
         if not extracted_texts:
             print("No text found between the specified byte sequences. (No text in this file?)")
@@ -138,15 +166,15 @@ def main(prefix = None):
 
 
     while True:
-        new_text_info = edit_texts(extracted_texts, positions)
+        new_text_info = edit_texts(extracted_texts, positions, names)
         if new_text_info is None:
             break
         
         index, new_text = new_text_info
 
-        content = update_string(content, extracted_texts, positions, index, new_text)
+        content = update_string(content, extracted_texts, positions, index, new_text, names)
 
-        extracted_texts, positions = extract_text_between_bytes(content)
+        extracted_texts, positions, names = extract_text_between_bytes(content)
 
     with open(file_path, "wb") as f:
         f.write(content)
