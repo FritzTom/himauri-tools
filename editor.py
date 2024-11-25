@@ -1,5 +1,5 @@
 
-import os
+import json, os
 
 
 def extract_text_between_bytes(content):
@@ -39,6 +39,47 @@ def extract_text_between_bytes(content):
         start_index = end_index + len(end_bytes)
 
     return extracted_texts, positions, names, name_positions
+
+def ex_import_texts(texts, positions, names):
+    while True:
+        inp = input("\x1b[42mi\x1b[0mmport, \x1b[42me\x1b[0mxport, \x1b[42mq\x1b[0muit ?: ")
+        if len(inp) < 1: continue
+        inp = inp.lower()
+        inp = inp[0]
+        if not inp in "qie":
+            print("Invalid input.")
+            continue
+        break
+    if inp == "q": return None
+    if inp == "e":
+        texts_object = ""
+        for i in range(len(positions)):
+            texts_object += f"{i}: <{names[i]}> {texts[i]}\n"
+        texts_object = texts_object[:-1]
+        with open("exported", "w") as f:
+            f.write(texts_object)
+        return None
+    with open("exported", "r") as f:
+        texts_objects = f.read()
+    texts_objects = texts_objects.split("\n")
+    new_texts_object = []
+    for i in texts_objects:
+        if not ": <" in i: continue
+        new_texts_object.append({"string_nr": int(i.split(": <", 1)[0]), "name": i.split(": <", 1)[1].split("> ", 1)[0], "text": i.split("> ", 1)[1]})
+    texts_objects = new_texts_object
+    if len(texts_objects) != len(positions):
+        print("Invalid length.\nAborting!")
+        exit(1)
+    texts = []
+    names = []
+    for i in range(len(texts_objects)):
+        if i != texts_objects[i]["string_nr"]:
+            print("Improperly ordered file.\nAborting!")
+            exit(1)
+        texts.append(texts_objects[i]["text"])
+        names.append(texts_objects[i]["name"])
+    return texts, names
+
 
 def edit_texts(texts, positions, names):
     print("Extracted Texts:")
@@ -111,8 +152,8 @@ def update_string(content, extracted_texts, positions, index, new_text, names, n
 
     string_offsets.reverse()
 
-
-    print_useful_info(string_offsets, positions, extracted_texts, names, offset_offset, new_text, update_name, changed_offsets, changed_string_index)
+    # very spammy!
+    # print_useful_info(string_offsets, positions, extracted_texts, names, offset_offset, new_text, update_name, changed_offsets, changed_string_index)
 
 
     string_offsets_raw = b''
@@ -175,15 +216,20 @@ def main(prefix = None):
 
 
     while True:
-        new_text_info = edit_texts(extracted_texts, positions, names)
+        new_text_info = ex_import_texts(extracted_texts, positions, names)
+        # new_text_info = edit_texts(extracted_texts, positions, names)
         if new_text_info is None:
             break
         
-        index, new_text, update_name_instead = new_text_info
-
-        content = update_string(content, extracted_texts, positions, index, new_text, names, name_positions, update_name_instead)
-
-        extracted_texts, positions, names, name_positions = extract_text_between_bytes(content)
+        # index, new_text, update_name_instead = new_text_info
+        new_texts, new_names = new_text_info
+        for i in range(len(positions)):
+            if extracted_texts[i] != new_texts[i]:
+                content = update_string(content, extracted_texts, positions, i, new_texts[i], names, name_positions, False)
+                extracted_texts, positions, names, name_positions = extract_text_between_bytes(content)
+            if names[i] != new_names[i]:
+                content = update_string(content, extracted_texts, positions, i, new_names[i], names, name_positions, True)
+                extracted_texts, positions, names, name_positions = extract_text_between_bytes(content)
 
     with open(file_path, "wb") as f:
         f.write(content)
