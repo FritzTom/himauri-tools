@@ -11,6 +11,7 @@ def extract_text_between_bytes(content):
     extracted_texts = []
     positions = []
     names = []
+    name_positions = []
 
         
     start_index = 0
@@ -23,6 +24,7 @@ def extract_text_between_bytes(content):
         if new_start_index == -1:
             break
         name = content[start_index:new_start_index]
+        name_positions.append((start_index, new_start_index))
         start_index = new_start_index
 
         start_index += len(header_end_bytes)
@@ -36,7 +38,7 @@ def extract_text_between_bytes(content):
         positions.append((start_index, end_index))
         start_index = end_index + len(end_bytes)
 
-    return extracted_texts, positions, names
+    return extracted_texts, positions, names, name_positions
 
 def edit_texts(texts, positions, names):
     print("Extracted Texts:")
@@ -51,14 +53,14 @@ def edit_texts(texts, positions, names):
         index = int(choice)
         if 0 <= index < len(texts):
             new_text = input("Enter the new text: ")
-            return index, new_text
+            return index, new_text, input("Update name instead?: [y/N]").lower() in "yes"
     except (ValueError, IndexError):
         print("Invalid choice.")
     
     return None
 
-def update_string(content, extracted_texts, positions, index, new_text, names):
-    old_positions = positions[index]
+def update_string(content, extracted_texts, positions, index, new_text, names, name_positions, update_name):
+    old_positions = positions[index] if not update_name else name_positions[index]
     old_offset = old_positions[0]
     old_length = old_positions[1] - old_positions[0]
     new_text_encoded = new_text.encode("shift_jis", errors='ignore')
@@ -94,8 +96,6 @@ def update_string(content, extracted_texts, positions, index, new_text, names):
 
     print(f"Found {number_offsets} offsets total.")
 
-    string_offsets_mapping = get_string_offset_mapping(string_offsets, positions, extracted_texts, names)
-
     string_offsets.reverse()
 
     changed_offsets = []
@@ -111,12 +111,8 @@ def update_string(content, extracted_texts, positions, index, new_text, names):
 
     string_offsets.reverse()
 
-    for i in range(len(string_offsets)):
-        current_text = string_offsets_mapping.get(string_offsets[i] - (offset_offset if i in changed_offsets else 0), "")
 
-        print(f"{('Name: ' + current_text[1] + ', ') if current_text else ''}{string_offsets[i] - (offset_offset if i in changed_offsets else 0)}\
-{(' -> ' + str(string_offsets[i])) if i in changed_offsets else ''} ({i})\
-{(' : ' + current_text[0]) if current_text else ''}{(' -> ' + new_text) if changed_string_index == i else ''}")
+    print_useful_info(string_offsets, positions, extracted_texts, names, offset_offset, new_text, update_name, changed_offsets, changed_string_index)
 
 
     string_offsets_raw = b''
@@ -131,6 +127,19 @@ def update_string(content, extracted_texts, positions, index, new_text, names):
     content = content[:old_offset] + new_text_encoded + content[old_offset + old_length:]
 
     return content
+
+def print_useful_info(string_offsets, positions, extracted_texts, names, offset_offset, new_text, update_name, changed_offsets, changed_string_index):
+    string_offsets_mapping = get_string_offset_mapping(string_offsets, positions, extracted_texts, names)
+
+    for i in range(len(string_offsets)):
+        current_text = string_offsets_mapping.get(string_offsets[i] - (offset_offset if i in changed_offsets else 0), "")
+
+        print(f"{string_offsets[i] - (offset_offset if i in changed_offsets else 0)}\
+{(' -> ' + str(string_offsets[i])) if i in changed_offsets else ''} ({i}) \
+{('Name: ' + current_text[1]) if (current_text and current_text[1]) else ''}\
+{(': ' + current_text[0]) if current_text else ''}{(' -> ' + new_text) if changed_string_index == i else ''}{' NAME UPDATE!' if update_name and changed_string_index == i else ''}")
+
+
 
 def get_string_offset_mapping(offsets, string_offsets, extracted_strings, names):
     mapping = {}
@@ -157,7 +166,7 @@ def main(prefix = None):
         with open(file_path, "rb") as f:
             content = f.read()
 
-        extracted_texts, positions, names = extract_text_between_bytes(content)
+        extracted_texts, positions, names, name_positions = extract_text_between_bytes(content)
 
         if not extracted_texts:
             print("No text found between the specified byte sequences. (No text in this file?)")
@@ -170,11 +179,11 @@ def main(prefix = None):
         if new_text_info is None:
             break
         
-        index, new_text = new_text_info
+        index, new_text, update_name_instead = new_text_info
 
-        content = update_string(content, extracted_texts, positions, index, new_text, names)
+        content = update_string(content, extracted_texts, positions, index, new_text, names, name_positions, update_name_instead)
 
-        extracted_texts, positions, names = extract_text_between_bytes(content)
+        extracted_texts, positions, names, name_positions = extract_text_between_bytes(content)
 
     with open(file_path, "wb") as f:
         f.write(content)
