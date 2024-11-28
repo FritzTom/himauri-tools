@@ -22,7 +22,7 @@ def main():
             print("Unknown file format!")
             exit(1)
 
-
+    [print(i) for i in os.listdir(temp_folder)]
     editor.main(temp_folder)
 
     os.remove(main_file_path)
