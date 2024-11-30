@@ -3,27 +3,6 @@ import os
 
 DEBUG = False
 
-def get_string_offsets_between_bytes(content, headers):
-    # start_bytes = b"\xff\x01\x00\x01"
-    # header_end_bytes = b"\x5c\x6e"
-    # start_bytes = bytes([0xFF, 0x01, 0x00, 0x01, 0x5C, 0x6E])
-    # end_bytes = bytes([0x00, 0x00, 0x0A, 0x0D])
-    
-    positions = []
-
-    start_index = 0
-    while len(headers) > 0:
-        current_header = headers.pop(0)
-        new_start_index = content.find(current_header, start_index)
-        if new_start_index == -1:
-            return positions
-        if start_index != 0:
-            positions.append((start_index, new_start_index - start_index))
-        new_start_index += len(current_header)
-        start_index = new_start_index
-
-    return positions
-
 def ex_import_texts(values, titles = None, ignore_titles = False):
     while True:
         inp = input("\x1b[42mi\x1b[0mmport, \x1b[42me\x1b[0mxport, \x1b[42mq\x1b[0muit ?: ")
@@ -64,11 +43,9 @@ def ex_import_texts(values, titles = None, ignore_titles = False):
         if i != int(data[i].split(": ", 1)[0]):
             print("Improperly ordered file.\nAborting!")
             exit(1)
-            #values.append([])
-            #continue
         values.append([])
         current_values = data[i].split(": ", 1)[1]
-        if ";A;" in current_values:
+        if len(current_values) > 0:
             current_values = current_values.split(";A;")
         else:
             current_values = []
@@ -99,11 +76,11 @@ def ex_import_texts(values, titles = None, ignore_titles = False):
         exit(1)
     return values
 
-def get_offsets(content):
+def check_file(content):
     file_length = int.from_bytes(content[0x8:0x8 + 3], "big")
     if file_length != len(content):
         print("Invalid file length!")
-        exit(1)
+        return False
 
     scenario_data_offset = int.from_bytes(content[0x17:0x17 + 2], "big")
 
@@ -113,7 +90,7 @@ def get_offsets(content):
     string_offsets_raw = content[0x1e:scenario_data_offset]
     if len(string_offsets_raw) % 3 != 0:
         print("Offset misalignment!")
-        exit(1)
+        return False
 
     offsets = []
     for i in range(len(string_offsets_raw) // 3):
@@ -121,172 +98,110 @@ def get_offsets(content):
 
     if len(offsets) != number_offsets:
         print("Incorrect number of offsets!")
-        exit(1)
+        return False
 
-    print(f"Found {number_offsets} offsets total.")
+    return True
 
-    offset_values = []
-    if len(offsets) > 0:
-        for i in range(len(offsets) - 1):
-            offset_values.append(content[offsets[i]:offsets[i + 1]])
-        offset_values.append(content[offsets[-1]:file_length - 1])
+def get_offsets(content):
 
-    return offsets, offset_values, scenario_data_offset - 0x1e
+    scenario_data_offset = int.from_bytes(content[0x17:0x17 + 2], "big")
 
-def update_value(content, index, new_value):
-    offsets, string_offsets_values, string_offsets_length = get_offsets(content)
+    string_offsets_raw = content[0x1e:scenario_data_offset]
+    if len(string_offsets_raw) % 3 != 0:
+        print("Offset misalignment!")
+        return False
 
-    old_offset = offsets[index]
-    # Length is till next offset or if there is no next offset till end of file - 1 (last byte of file is static, thanks xor (dc user id 1091741505049350226))
-    old_length = (offsets[index + 1] if len(offsets) > (index + 1) else len(content) - 1) - old_offset
-    new_length = len(new_value)
-    offset_offset = new_length - old_length
+    offsets = []
+    for i in range(len(string_offsets_raw) // 3):
+        offsets.append(int.from_bytes(string_offsets_raw[i * 3:(i + 1) * 3], "big"))
 
-    # Create bytearray which will be updated to have the new value
-    contents_view = bytearray(content)
+    return offsets
 
-    # Update (and write) file length
-    file_length = int.from_bytes(content[0x8:0x8 + 3], "big")
-    if file_length != len(content):
-        print("Invalid file length!")
-        exit(1)
-    file_length = file_length + offset_offset
-    file_length = file_length.to_bytes(3, "big")
-    contents_view[0x8:0x8 + 3] = file_length
+def set_offsets(content, offsets):
 
-    # Update data offsets
-    offsets.reverse()
-    for i in range(len(offsets)):
-        current = offsets[i]
-        if current == old_offset:
-            break
-        offsets[i] += offset_offset
-    offsets.reverse()
-
-    # Write updated data offsets
-    offsets_encoded = b''
+    offsets_raw = b""
     for i in offsets:
-        offsets_encoded = offsets_encoded + i.to_bytes(3, "big")
-    contents_view[0x1e:0x1e + string_offsets_length] = offsets_encoded
+        offsets_raw = offsets_raw + i.to_bytes(3, "big")
 
-    # Replace value
-    contents_view[old_offset:old_offset + old_length] = new_value
+    scenario_data_offset = int.from_bytes(content[0x17:0x17 + 2], "big")
 
-    content = bytes(contents_view)
+    if len(offsets_raw) != (scenario_data_offset - 0x1e):
+        print("Warning: Changing amount of offsets.")
+
+    content = content[:0x1e] + offsets_raw + content[scenario_data_offset:]
+
     return content
 
-# def print_useful_info(string_offsets, positions, extracted_texts, names, offset_offset, new_text, update_name, changed_offsets, changed_string_index):
-#     string_offsets_mapping = get_string_offset_mapping(string_offsets, positions, extracted_texts, names)
-#
-#     for i in range(len(string_offsets)):
-#         current_text = string_offsets_mapping.get(string_offsets[i] - (offset_offset if i in changed_offsets else 0), "")
-#
-#         print(f"{string_offsets[i] - (offset_offset if i in changed_offsets else 0)}\
-# {(' -> ' + str(string_offsets[i])) if i in changed_offsets else ''} ({i}) \
-# {('Name: ' + current_text[1]) if (current_text and current_text[1]) else ''}\
-# {(': ' + current_text[0]) if current_text else ''}{(' -> ' + new_text) if changed_string_index == i else ''}{' NAME UPDATE!' if update_name and changed_string_index == i else ''}")
+def fix_file_length(content):
+    file_length = len(content).to_bytes(3, "big")
+    content = content[:0x8] + file_length + content[0x8 + 3:]
+    return content
 
-def get_strings(content):
-    offsets, offset_values, offsets_length = get_offsets(content)
+def extract_data(content):
+    beginning_data = get_offsets(content)[0]
+    data = bytearray(content[beginning_data:])
+    values = []
+    state = [data, 0]
+    while state[1] < len(state[0]):
+        if peak(state, 2) == b"\x0a\x0d":
+            consume(state, 2)
+            packet = []
+            while True:
+                current = b""
+                if (peak(state, 2) == b"\x0a\x0d") or (state[1] >= len(state[0])):
+                    break
+                offset = get_index(state, beginning_data)
+                while not ((peak(state) == b"\xff") or (peak(state, 2) == b"\x0a\x0d")):
+                    current = current + consume(state)
+                packet.append((offset, current))
+                if peak(state, 1) == b"\xff":
+                    consume(state)
+            values.append(packet)
+        else:
+            print("Encountered unknown data!")
+            skip(state)
+    print(f"Found {len(values)} data segments total.")
+    return values
 
-    # b"\x0a\x0d"
-    # 33 ff xx xx ff xx xx ff 01 00 01
-    headers =[b"\xff\x01\x00\x01", b"\x5c\x6e", b"\x00\x00"]
-    #choice_headers = [b"\x34\xFF\x02\x01\xFF\x01", b"\x00\x02\x01\xff\x00"]
-
-    all_fixed_string_offsets = []
-    all_relative_string_offsets = []
-    for i in range(len(offsets)):
-        string_offsets = get_string_offsets_between_bytes(offset_values[i], [i for i in headers])
-        all_relative_string_offsets.append(string_offsets)
-        fixed_string_offsets = []
-        for j in string_offsets:
-            fixed_string_offsets.append((j[0] + offsets[i], j[1]))
-        all_fixed_string_offsets.append(fixed_string_offsets)
-
-    strings = []
-    for i in all_fixed_string_offsets:
-        strings.append([])
+def create_data(values):
+    data = bytearray()
+    for i in values:
+        data.extend(b"\x0a\x0d")
         for j in i:
-            strings[-1].append(content[j[0]:j[0] + j[1]])
-
-    return all_fixed_string_offsets, all_relative_string_offsets, strings
-
-def parse_pattern(value, pattern):
-    found = []
-    for i in pattern:
-        match pattern[0]:
-            case 0:
-                c, value = value[:len(i[1])], value[len(i[1]):]
-                if c != i[1]:
-                    return False, found
-            case 1:
-                c, value = value[:i[1]], value[i[1]:]
-                found.append(c)
-            case 2:
-                e = i[1]
-                l = -1
-                if len(i[1]) > 1: l = i[1][1]
-                cf = b""
-                c, value = value[0], value[1:]
-                i = 0
-                while (c != e) and ((l == -1) or (l > i)):
-                    i += 1
-                    cf = cf + bytes([c])
-                    c, value = value[0], value[1:]
+            o = j[0]
+            v = j[1]
+            data.extend(v)
+            data.append(0xff)
 
 
-    return True, found
-
-def create_pattern(*pattern):
-    constructed_pattern = []
-    for i in pattern:
-        match type(i):
-            case "bytes":
-                constructed_pattern.append((0, i))
-            case "int":
-                constructed_pattern.append((1, i))
-            case "tuple":
-                constructed_pattern.append((2, i))
-    return constructed_pattern
-
-
-
+def peak(state, amount = 1): return state[0][state[1]:state[1] + amount]
+def consume(state, amount = 1):
+    state[1] = state[1] + amount
+    return state[0][state[1] - amount:state[1]]
+def get_index(state, beginning_data): return state[1] + beginning_data
+def skip(state):
+    data = state[0]
+    i = state[1]
+    while (i < len(data)) and peak(state, 2) != b"\x0a\x0d": i += 1
+    state[1] = i
 
 def main(prefix = None):
     while True:
-        file_path = input("Enter the path to your binary file: ")  # Prompt for file path
+        file_path = "701.him"
+        #file_path = input("Enter the path to your binary file: ")  # Prompt for file path
         if prefix:
             file_path = os.path.join(prefix, file_path)
         if not os.path.isfile(file_path):
             print("The specified file does not exist, please check the path and try again.")
             continue
-
-        with open(file_path, "rb") as f:
-            content = f.read()
-
-        fixed_string_offsets, relative_string_offsets, strings = get_strings(content)
-
-        if len(strings) < 1:
-            print("No text found between the specified byte sequences. (No text in this file?)")
-            continue
         break
 
+    with open(file_path, "rb") as f:
+        content = f.read()
 
-    while True:
-        new_strings = ex_import_texts(strings, None, True)
-        if new_strings is None:
-            break
+    data = extract_data(content)
 
-
-        for i in range(len(strings)):
-            for j in range(len(new_strings[i])):
-                if strings[i][j] != new_strings[i][j]:
-                    offsets, offset_values, offsets_length = get_offsets(content)
-                    fixed_string_offsets, relative_string_offsets, strings = get_strings(content)
-                    value = offset_values[i]
-                    value = value[:relative_string_offsets[i][j][0]] + new_strings[i][j] + value[relative_string_offsets[i][j][0] + relative_string_offsets[i][j][1]:]
-                    content = update_value(content, i, value)
+    print(len([0 for i in data if i[0][1][0] == 0x33]))
 
     print("Quitting.")
 
