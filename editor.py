@@ -132,13 +132,36 @@ def set_offsets(content, offsets):
 
     return content
 
+def create_offsets(offsets):
+
+    offsets_raw = b""
+    for i in offsets:
+        offsets_raw = offsets_raw + i.to_bytes(3, "big")
+
+    return offsets_raw
+
 def fix_file_length(content):
     file_length = len(content).to_bytes(3, "big")
     content = content[:0x8] + file_length + content[0x8 + 3:]
     return content
 
+def fix_headers(content):
+    fix_file_length(content)
+    offsets_count = len(get_offsets(content))
+    data = extract_data(content)
+    data = [i for i in data if i[0][1][0] == 0x33]
+    if len(data) != offsets_count:
+        print("Couldn't fix offsets due to length mismatch!")
+        return content
+    content = set_offsets(content, [i[0][0] - 2 for i in data])
+    return content
+
+def get_header(content):
+    beginning_data = int.from_bytes(content[0x17:0x17 + 2], "big")  # start at scenario data
+    return content[:beginning_data]
+
 def extract_data(content):
-    beginning_data = get_offsets(content)[0]
+    beginning_data = int.from_bytes(content[0x17:0x17 + 2], "big") # start at scenario data with parsing
     data = bytearray(content[beginning_data:])
     values = []
     state = [data, 0]
@@ -148,14 +171,17 @@ def extract_data(content):
             packet = []
             while True:
                 current = b""
-                if (peak(state, 2) == b"\x0a\x0d") or (state[1] >= len(state[0])):
-                    break
                 offset = get_index(state, beginning_data)
                 while not ((peak(state) == b"\xff") or (peak(state, 2) == b"\x0a\x0d")):
                     current = current + consume(state)
                 packet.append((offset, current))
                 if peak(state, 1) == b"\xff":
                     consume(state)
+                    if state[1] >= len(state[0]):
+                        packet.append((get_index(state, beginning_data), b""))
+                        break
+                else:
+                    break
             values.append(packet)
         else:
             print("Encountered unknown data!")
@@ -167,11 +193,31 @@ def create_data(values):
     data = bytearray()
     for i in values:
         data.extend(b"\x0a\x0d")
-        for j in i:
+        data.extend(i[0][1])
+        for j in i[1:]:
+            data.append(0xff)
             o = j[0]
             v = j[1]
             data.extend(v)
-            data.append(0xff)
+    return bytes(data)
+
+def create_content(offsets, values):
+    data = create_data(values)
+    header_size = 30
+    content = bytearray()
+    content.extend([0x48, 0x69, 0x6D, 0x61, 0x75, 0x72, 0x69, 0x00])
+    content.extend((len(data) + len(offsets) * 3 + header_size).to_bytes(3, "big"))
+    content.extend([0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x1E, 0xFF, 0x00, 0x54, 0xFF, 0x00])
+    content.extend((len(offsets) * 3 + header_size).to_bytes(2, "big"))
+    content.extend([0x05, 0x10, 0xFF])
+    content.extend(len(offsets).to_bytes(2, "big"))
+
+    content.extend(create_offsets(offsets))
+
+    content.extend(data)
+
+    return bytes(content)
+
 
 
 def peak(state, amount = 1): return state[0][state[1]:state[1] + amount]
@@ -199,9 +245,13 @@ def main(prefix = None):
     with open(file_path, "rb") as f:
         content = f.read()
 
+    offsets = get_offsets(content)
     data = extract_data(content)
 
-    print(len([0 for i in data if i[0][1][0] == 0x33]))
+    new_content = create_content(offsets, data)
+    new_content = fix_headers(new_content)
+
+    content = new_content
 
     print("Quitting.")
 
