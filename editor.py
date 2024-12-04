@@ -35,7 +35,7 @@ def ex_import_texts(values, titles = None, ignore_titles = False):
             f.write(data)
         return None
     ov = values
-    with open("exported", "r") as f:
+    with open("exported", "r", encoding="utf-8") as f:
         data = f.read()
     data = data.split(";B;\n")
     values = []
@@ -264,56 +264,7 @@ def main(prefix = None):
     with open(file_path, "rb") as f:
         content = f.read()
 
-    data = extract_data(content)
-
-    data = [i for i in data if not i[0][1][0] in [0x36, 0x32]]
-    strings = [i for i in data if i[0][1][0] == 0x33]
-    # strings = [i[-1][1] for i in strings]
-    new_strings = []
-    for i in range(len(strings)):
-        # [print(j[0][0] - 2) for j in data if ((j[0][1][0] == 0x33) and (j[-1][1] == i))]
-        current = strings[i]
-        value = current[-1][1]
-        if len(value) < 1:
-            value = current[-2][1]
-        value = value[value.index(b"\x01", 1) + 3:]
-        value = value[:value.index(b"\x00")]
-        new_strings.append(value)
-    strings = new_strings
-
-    strings = [[i] for i in strings]
-
-    new_strings = ex_import_texts(strings, None, True)
-    if not new_strings:
-        return
-
-    for i in range(len(data)):
-        if data[i][0][1][0] == 0x33:
-            new_string = new_strings.pop(0)[0]
-
-            current = data[i]
-            value = current[-1][1]
-            index = -1
-            if len(value) < 1:
-                value = current[-2][1]
-                index = -2
-            start = value.index(b"\x01", 1) + 3
-            value = value[start:]
-            end = value.index(b"\x00") + start
-
-            value = current[index][1]
-            value = value[:start] + new_string + value[end:]
-
-            data[i][index] = (0, value)
-
-    new_content = create_content_without_offsets(data)
-    s = bytes([0x0A, 0x0D, 0x36, 0xFF, 0x02, 0x05, 0xFF, 0x00, 0x15, 0x00, 0xFF, 0x03, 0x1A, 0x0E, 0x03, 0xE8, 0x52, 0xFF])
-    si = new_content.index(s) + len(s)
-
-
-    new_content = fix_headers(new_content)
-
-    #content = new_content
+    # Code here
 
 
     print("Quitting.")
@@ -322,6 +273,52 @@ def main(prefix = None):
         f.write(content)
 
     print("Changes saved to sub file.")
+
+
+def filter_data(data):
+    filtered_data = []
+    for item in data:
+        if len(item) > 0 and len(item[0]) > 1:
+            if item[0][1][0] not in [0x36, 0x32]:
+                filtered_data.append(item)
+    return filtered_data
+
+def extract_strings(data):
+    strings = [item for item in data if len(item) > 0 and len(item[0]) > 1 and item[0][1][0] == 0x33]
+    new_strings = []
+
+    for current in strings:
+        if len(current) < 2:
+            continue
+        value = current[-1][1] if len(current[-1]) > 1 else current[-2][1]
+        if b"\x01" in value and b"\x00" in value:
+            value = value[value.index(b"\x01", 1) + 3:]
+            value = value[:value.index(b"\x00")]
+            new_strings.append(value)
+
+    return new_strings
+
+def update_data_with_new_strings(data, new_strings):
+    for i in range(len(data)):
+        if data[i][0][1][0] == 0x33:
+            if not new_strings:
+                break
+            new_string = new_strings.pop(0)[0]
+            current = data[i]
+            if len(current) < 2:
+                continue
+            value = current[-1][1] if len(current[-1]) > 1 else current[-2][1]
+            index = -1 if len(current[-1][1]) > 0 else -2
+            
+            if b"\x01" in value and b"\x00" in value:
+                start = value.index(b"\x01", 1) + 3
+                end = value.index(b"\x00", start) + start
+                
+                value = current[index][1]
+                value = value[:start] + new_string + value[end:]
+                data[i][index] = (0, value)
+    return data
+
 
 if __name__ == "__main__":
     main()
