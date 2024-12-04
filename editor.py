@@ -147,13 +147,10 @@ def fix_file_length(content):
 
 def fix_headers(content):
     fix_file_length(content)
-    offsets_count = len(get_offsets(content))
     data = extract_data(content)
     data = [i for i in data if i[0][1][0] == 0x33]
-    if len(data) != offsets_count:
-        print("Couldn't fix offsets due to length mismatch!")
-        return content
-    content = set_offsets(content, [i[0][0] - 2 for i in data])
+    offsets = [i[0][0] - 2 for i in data]
+    content = set_offsets(content, offsets)
     return content
 
 def get_header(content):
@@ -162,7 +159,10 @@ def get_header(content):
 
 def extract_data(content):
     beginning_data = int.from_bytes(content[0x17:0x17 + 2], "big") # start at scenario data with parsing
-    data = bytearray(content[beginning_data:])
+    return parse_data(content[beginning_data:], beginning_data)
+
+def parse_data(data, offset_offset):
+    data = bytearray(data)
     values = []
     state = [data, 0]
     while state[1] < len(state[0]):
@@ -171,14 +171,14 @@ def extract_data(content):
             packet = []
             while True:
                 current = b""
-                offset = get_index(state, beginning_data)
+                offset = get_index(state, offset_offset)
                 while not ((peak(state) == b"\xff") or (peak(state, 2) == b"\x0a\x0d")):
                     current = current + consume(state)
                 packet.append((offset, current))
                 if peak(state, 1) == b"\xff":
                     consume(state)
                     if state[1] >= len(state[0]):
-                        packet.append((get_index(state, beginning_data), b""))
+                        packet.append((get_index(state, offset_offset), b""))
                         break
                 else:
                     break
@@ -199,6 +199,7 @@ def create_data(values):
             o = j[0]
             v = j[1]
             data.extend(v)
+    data.append(255)
     return bytes(data)
 
 def create_content(offsets, values):
@@ -218,7 +219,25 @@ def create_content(offsets, values):
 
     return bytes(content)
 
+def offset_offsets(values, offset):
+    new_values = []
+    for i in values:
+        new_values.append([])
+        for j in i:
+            new_values[-1].append((j[0] + offset, j[1]))
+    return new_values
 
+def normalize_offsets(values, offset):
+    data = create_data(values)
+    values = parse_data(data, offset)
+    return values
+
+def create_content_without_offsets(values):
+    header_size = 30
+    strings = [i for i in values if i[0][1][0] == 0x33]
+    values = normalize_offsets(values, len(strings) * 3 + header_size)
+    offsets = [i[0][0] - 2 for i in strings]
+    return create_content(offsets, values)
 
 def peak(state, amount = 1): return state[0][state[1]:state[1] + amount]
 def consume(state, amount = 1):
@@ -245,13 +264,57 @@ def main(prefix = None):
     with open(file_path, "rb") as f:
         content = f.read()
 
-    offsets = get_offsets(content)
     data = extract_data(content)
 
-    new_content = create_content(offsets, data)
+    data = [i for i in data if not i[0][1][0] in [0x36, 0x32]]
+    strings = [i for i in data if i[0][1][0] == 0x33]
+    # strings = [i[-1][1] for i in strings]
+    new_strings = []
+    for i in range(len(strings)):
+        # [print(j[0][0] - 2) for j in data if ((j[0][1][0] == 0x33) and (j[-1][1] == i))]
+        current = strings[i]
+        value = current[-1][1]
+        if len(value) < 1:
+            value = current[-2][1]
+        value = value[value.index(b"\x01", 1) + 3:]
+        value = value[:value.index(b"\x00")]
+        new_strings.append(value)
+    strings = new_strings
+
+    strings = [[i] for i in strings]
+
+    new_strings = ex_import_texts(strings, None, True)
+    if not new_strings:
+        return
+
+    for i in range(len(data)):
+        if data[i][0][1][0] == 0x33:
+            new_string = new_strings.pop(0)[0]
+
+            current = data[i]
+            value = current[-1][1]
+            index = -1
+            if len(value) < 1:
+                value = current[-2][1]
+                index = -2
+            start = value.index(b"\x01", 1) + 3
+            value = value[start:]
+            end = value.index(b"\x00") + start
+
+            value = current[index][1]
+            value = value[:start] + new_string + value[end:]
+
+            data[i][index] = (0, value)
+
+    new_content = create_content_without_offsets(data)
+    s = bytes([0x0A, 0x0D, 0x36, 0xFF, 0x02, 0x05, 0xFF, 0x00, 0x15, 0x00, 0xFF, 0x03, 0x1A, 0x0E, 0x03, 0xE8, 0x52, 0xFF])
+    si = new_content.index(s) + len(s)
+
+
     new_content = fix_headers(new_content)
 
-    content = new_content
+    #content = new_content
+
 
     print("Quitting.")
 

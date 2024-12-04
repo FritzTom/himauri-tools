@@ -10,8 +10,9 @@ def main():
     if not DEV_MODE or len(input("Extract?: ")) > 0:
         extract_file(main_file_path, temp_folder)
 
-    [print(i) for i in os.listdir(temp_folder)]
-    editor.main(temp_folder)
+    if not DEV_MODE or len(input("Edit?: ")) > 0:
+        [print(i) for i in os.listdir(temp_folder)]
+        editor.main(temp_folder)
 
     if not DEV_MODE or len(input("Pack?: ")) > 0:
         pack_file(temp_folder, main_file_path)
