@@ -1,8 +1,6 @@
 
 import os
 
-DEBUG = False
-
 def ex_import_texts(values, titles = None, ignore_titles = False):
     while True:
         inp = input("\x1b[42mi\x1b[0mmport, \x1b[42me\x1b[0mxport, \x1b[42mq\x1b[0muit ?: ")
@@ -35,7 +33,7 @@ def ex_import_texts(values, titles = None, ignore_titles = False):
             f.write(data)
         return None
     ov = values
-    with open("exported", "r") as f:
+    with open("exported", "r", encoding="utf-8") as f:
         data = f.read()
     data = data.split(";B;\n")
     values = []
@@ -117,27 +115,28 @@ def get_offsets(content):
 
     return offsets
 
-def set_offsets(content, offsets):
+def get_segment_offsets(values):
+    offsets = []
+    for i in values:
+        offsets.append(i[1])
+    return offsets
 
-    offsets_raw = b""
-    for i in offsets:
-        offsets_raw = offsets_raw + i.to_bytes(3, "big")
+def set_offsets(content, offsets):
+    offsets_raw = create_offsets(offsets)
 
     scenario_data_offset = int.from_bytes(content[0x17:0x17 + 2], "big")
 
     if len(offsets_raw) != (scenario_data_offset - 0x1e):
-        print("Warning: Changing amount of offsets.")
+        raise Exception("Changing amount of offsets.")
 
     content = content[:0x1e] + offsets_raw + content[scenario_data_offset:]
 
     return content
 
 def create_offsets(offsets):
-
     offsets_raw = b""
     for i in offsets:
         offsets_raw = offsets_raw + i.to_bytes(3, "big")
-
     return offsets_raw
 
 def fix_file_length(content):
@@ -145,66 +144,38 @@ def fix_file_length(content):
     content = content[:0x8] + file_length + content[0x8 + 3:]
     return content
 
-def fix_headers(content):
-    fix_file_length(content)
-    data = extract_data(content)
-    data = [i for i in data if i[0][1][0] == 0x33]
-    offsets = [i[0][0] - 2 for i in data]
-    content = set_offsets(content, offsets)
-    return content
-
-def get_header(content):
-    beginning_data = int.from_bytes(content[0x17:0x17 + 2], "big")  # start at scenario data
-    return content[:beginning_data]
-
-def extract_data(content):
-    beginning_data = int.from_bytes(content[0x17:0x17 + 2], "big") # start at scenario data with parsing
-    return parse_data(content[beginning_data:], beginning_data)
-
-def parse_data(data, offset_offset):
-    data = bytearray(data)
-    values = []
-    state = [data, 0]
-    while state[1] < len(state[0]):
-        if peak(state, 2) == b"\x0a\x0d":
-            consume(state, 2)
-            packet = []
-            while True:
-                current = b""
-                offset = get_index(state, offset_offset)
-                while not ((peak(state) == b"\xff") or (peak(state, 2) == b"\x0a\x0d")):
-                    current = current + consume(state)
-                packet.append((offset, current))
-                if peak(state, 1) == b"\xff":
-                    consume(state)
-                    if state[1] >= len(state[0]):
-                        packet.append((get_index(state, offset_offset), b""))
-                        break
-                else:
-                    break
-            values.append(packet)
-        else:
-            print("Encountered unknown data!")
-            skip(state)
-    print(f"Found {len(values)} data segments total.")
-    return values
-
-def create_data(values):
+def create_data(values, offset_offset):
     data = bytearray()
-    for i in values:
-        data.extend(b"\x0a\x0d")
-        data.extend(i[0][1])
-        for j in i[1:]:
-            data.append(0xff)
-            o = j[0]
-            v = j[1]
-            data.extend(v)
-    data.append(255)
+    pointers = {}
+    for i in range(len(values)):
+        offset = pointers.pop(i, None)
+        if offset: data[offset:offset + 3] = (len(data) + offset_offset).to_bytes(3, "big")
+        for j in values[i][0]:
+            if type(j) == bytes:
+                data.extend(j)
+            elif type(j) == tuple:
+                s = j[0] # Global
+                o = j[1] # Offset
+                ci = len(data)
+                if not s:
+                    data.extend((ci + o + offset_offset).to_bytes(3))
+                    continue
+                o += i
+                data.extend(b"\x00" * 3)
+                pointers[o] = ci
+            else:
+                raise Exception("Invalid data!")
+    values = parse_data(bytes(data), offset_offset)
+    for k,v in pointers:
+        data[v:v + 3] = values[k][1].to_bytes(3, "big")
     return bytes(data)
 
+
+
 def create_content(offsets, values):
-    data = create_data(values)
     header_size = 30
+    this_header_size = len(offsets) * 3 + header_size
+    data = create_data(values, this_header_size)
     content = bytearray()
     content.extend([0x48, 0x69, 0x6D, 0x61, 0x75, 0x72, 0x69, 0x00])
     content.extend((len(data) + len(offsets) * 3 + header_size).to_bytes(3, "big"))
@@ -219,36 +190,71 @@ def create_content(offsets, values):
 
     return bytes(content)
 
-def offset_offsets(values, offset):
-    new_values = []
-    for i in values:
-        new_values.append([])
-        for j in i:
-            new_values[-1].append((j[0] + offset, j[1]))
-    return new_values
+def split_content(content):
+    beginning_data = int.from_bytes(content[0x17:0x17 + 2], "big")
+    return content[:beginning_data], content[beginning_data:], beginning_data
 
-def normalize_offsets(values, offset):
-    data = create_data(values)
-    values = parse_data(data, offset)
+def parse_data(data, offset_offset):
+    if not data.startswith(b"\x0a\x0d"):
+        raise Exception("Invalid start for data")
+    entries = []
+    index = 0
+    ol = len(data)
+    while index < ol:
+        try:
+            length = data.index(b"\x0a\x0d", 2)
+        except ValueError:
+            length = -1
+        if length == -1:
+            entry = [[data], index + offset_offset]
+            entries.append(entry)
+            break
+        entry = [[data[:length]], index + offset_offset]
+        data = data[length:]
+        index += length
+        entries.append(entry)
+    return entries
+
+def get_id(data):
+    if not data[0].startswith(b"\x0a\x0d"):
+        raise Exception("Invalid start of packet.")
+    return data[0][2]
+
+def add_pointers(values):
+    segment_offsets = get_segment_offsets(values)
+    segment_offsets_lookup = {}
+    for i in range(len(segment_offsets)): segment_offsets_lookup[segment_offsets[i]] = i
+
+    for i in range(len(values)):
+        current = values[i][0]
+        orig = current[0]
+        match get_id(current):
+            case 0x36:
+                if current[0].startswith(b"\x0A\x0D\x36\xFF\x02\x05\xFF\x00\x15\x00\xFF\x03\x1A\x0E\x03\xE8\x52\xFF"):
+                    current[0] = current[0][:-3]
+                    current.append((True, 2))
+                if current[0].startswith(b"\x0A\x0D\x36\xFF\x02\x05\xFF\x00\x04"):
+                    current[0] = current[0][:-3]
+                    offset = int.from_bytes(orig[-3:], "big")
+                    current.append((True, segment_offsets_lookup[offset] - i))
+            case 0x34:
+                if current[0].startswith(b"\x0A\x0D\x34\xFF\x02\x02\xFF\x00"):
+                    current[0] = b"\x0A\x0D\x34\xFF\x02\x02\xFF\x00"
+                    j = 0
+                    while True:
+                        current.append(b"\x03\x10")
+                        current.append(bytes([j + 1]))
+                        current.append(b"\x50\xFF")
+                        current.append((False, 14))
+                        current.append(b"\x00\x3F\x02")
+                        current.append(bytes([orig[8 + j * 19 + 11]])) # Does this just always work or break something?
+                        current.append(b"\x01\x40\xFF\x04")
+                        offset = int.from_bytes(orig[8 + j * 19 + 16:8 + j * 19 + 16 + 3], "big")
+                        current.append((True, segment_offsets_lookup[offset] - i))
+                        j += 1
+                        if j > 2: break
+
     return values
-
-def create_content_without_offsets(values):
-    header_size = 30
-    strings = [i for i in values if i[0][1][0] == 0x33]
-    values = normalize_offsets(values, len(strings) * 3 + header_size)
-    offsets = [i[0][0] - 2 for i in strings]
-    return create_content(offsets, values)
-
-def peak(state, amount = 1): return state[0][state[1]:state[1] + amount]
-def consume(state, amount = 1):
-    state[1] = state[1] + amount
-    return state[0][state[1] - amount:state[1]]
-def get_index(state, beginning_data): return state[1] + beginning_data
-def skip(state):
-    data = state[0]
-    i = state[1]
-    while (i < len(data)) and peak(state, 2) != b"\x0a\x0d": i += 1
-    state[1] = i
 
 def main(prefix = None):
     while True:
@@ -264,56 +270,17 @@ def main(prefix = None):
     with open(file_path, "rb") as f:
         content = f.read()
 
-    data = extract_data(content)
+    headers, data, header_size = split_content(content)
+    values = parse_data(data, header_size)
+    values = add_pointers(values)
 
-    data = [i for i in data if not i[0][1][0] in [0x36, 0x32]]
-    strings = [i for i in data if i[0][1][0] == 0x33]
-    # strings = [i[-1][1] for i in strings]
-    new_strings = []
-    for i in range(len(strings)):
-        # [print(j[0][0] - 2) for j in data if ((j[0][1][0] == 0x33) and (j[-1][1] == i))]
-        current = strings[i]
-        value = current[-1][1]
-        if len(value) < 1:
-            value = current[-2][1]
-        value = value[value.index(b"\x01", 1) + 3:]
-        value = value[:value.index(b"\x00")]
-        new_strings.append(value)
-    strings = new_strings
+    strings = extract_strings(values)
+    #strings[5] = b"A" * (len(strings[5]) - 1)
+    strings[5] = b"hello"
+    values = update_data_with_new_strings(values, strings)
 
-    strings = [[i] for i in strings]
-
-    new_strings = ex_import_texts(strings, None, True)
-    if not new_strings:
-        return
-
-    for i in range(len(data)):
-        if data[i][0][1][0] == 0x33:
-            new_string = new_strings.pop(0)[0]
-
-            current = data[i]
-            value = current[-1][1]
-            index = -1
-            if len(value) < 1:
-                value = current[-2][1]
-                index = -2
-            start = value.index(b"\x01", 1) + 3
-            value = value[start:]
-            end = value.index(b"\x00") + start
-
-            value = current[index][1]
-            value = value[:start] + new_string + value[end:]
-
-            data[i][index] = (0, value)
-
-    new_content = create_content_without_offsets(data)
-    s = bytes([0x0A, 0x0D, 0x36, 0xFF, 0x02, 0x05, 0xFF, 0x00, 0x15, 0x00, 0xFF, 0x03, 0x1A, 0x0E, 0x03, 0xE8, 0x52, 0xFF])
-    si = new_content.index(s) + len(s)
-
-
-    new_content = fix_headers(new_content)
-
-    #content = new_content
+    offsets = get_offsets(headers)
+    content = create_content(offsets, values)
 
 
     print("Quitting.")
@@ -322,6 +289,46 @@ def main(prefix = None):
         f.write(content)
 
     print("Changes saved to sub file.")
+
+
+# def filter_data(data):
+#     filtered_data = []
+#     for item in data:
+#         if len(item) > 0 and len(item[0]) > 1:
+#             if item[0][1][0] not in [0x36, 0x32]:
+#                 filtered_data.append(item)
+#     return filtered_data
+
+def extract_strings(data):
+    strings = [item for item in data if get_id(item[0]) == 0x33]
+    new_strings = []
+
+    for current in strings:
+        # if len(current) < 2:
+        #     continue
+        value = current[0][0]
+        value = value[value.index(b"\\n") + 2:]
+        value = value[:value.index(b"\x00")]
+        new_strings.append(value)
+
+    return new_strings
+
+def update_data_with_new_strings(data, new_strings):
+    for i in range(len(data)):
+        current = data[i][0]
+        if get_id(current) == 0x33:
+            new_string = new_strings.pop(0)
+            value = current[0]
+
+            start = value.index(b"\\n", 1) + 2
+            end = value.index(b"\x00", start)
+
+            value = current[0]
+            value = value[:start] + new_string + value[end:]
+            data[i][0][0] = value
+            data[i][1] = -1 # Change offset to -1 to indicate it's not accurate
+    return data
+
 
 if __name__ == "__main__":
     main()
