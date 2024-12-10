@@ -1,5 +1,5 @@
 
-import os
+import json, os
 
 def ex_import_texts(values, titles = None, ignore_titles = False):
     while True:
@@ -148,8 +148,10 @@ def create_data(values, offset_offset):
     data = bytearray()
     pointers = {}
     for i in range(len(values)):
-        offset = pointers.pop(i, None)
-        if offset: data[offset:offset + 3] = (len(data) + offset_offset).to_bytes(3, "big")
+        offsets = pointers.pop(i, None)
+        if offsets:
+            for offset in offsets:
+                data[offset:offset + 3] = (len(data) + offset_offset).to_bytes(3, "big")
         for j in values[i][0]:
             if type(j) == bytes:
                 data.extend(j)
@@ -161,13 +163,15 @@ def create_data(values, offset_offset):
                     data.extend((ci + o + offset_offset).to_bytes(3))
                     continue
                 o += i
-                data.extend(b"\x00" * 3)
-                pointers[o] = ci
+                data.extend(b"\xA5" * 3)
+                if pointers.get(o, None) is None: pointers[o] = []
+                pointers[o].append(ci)
             else:
                 raise Exception("Invalid data!")
     values = parse_data(bytes(data), offset_offset)
     for k,v in pointers:
-        data[v:v + 3] = values[k][1].to_bytes(3, "big")
+        for target in v:
+            data[target:target + 3] = values[k][1].to_bytes(3, "big")
     return bytes(data)
 
 
@@ -236,6 +240,7 @@ def add_pointers(values):
                 if current[0].startswith(b"\x0A\x0D\x36\xFF\x02\x05\xFF\x00\x04"):
                     current[0] = current[0][:-3]
                     offset = int.from_bytes(orig[-3:], "big")
+                    #print(segment_offsets_lookup[offset] - i)
                     current.append((True, segment_offsets_lookup[offset] - i))
             case 0x34:
                 if current[0].startswith(b"\x0A\x0D\x34\xFF\x02\x02\xFF\x00"):
@@ -275,8 +280,29 @@ def main(prefix = None):
     values = add_pointers(values)
 
     strings = extract_strings(values)
-    #strings[5] = b"A" * (len(strings[5]) - 1)
-    strings[5] = b"hello"
+
+    string_object = []
+    for i in range(len(strings)):
+        try:
+            decoded = strings[i].decode("shift-jis")
+        except UnicodeDecodeError:
+            continue
+        string_object.append([i, decoded])
+
+    if len(input("Export?: ")) > 0:
+        with open("strings", "w") as f: f.write(json.dumps([i[1] for i in string_object], ensure_ascii=False))
+        with open("indexes", "w") as f: f.write(json.dumps([i[0] for i in string_object]))
+
+    if len(input("Import?: ")) > 0:
+        with open("strings", "r") as f: strings_values = [i.encode("shift-jis") for i in json.loads(f.read())]
+        with open("indexes", "r") as f: indexes = json.loads(f.read())
+        string_object = [i for i in zip(indexes, strings_values)]
+        for i in string_object:
+            strings[i[0]] = i[1]
+    else:
+        print("Quitting.")
+        return
+
     values = update_data_with_new_strings(values, strings)
 
     offsets = get_offsets(headers)
