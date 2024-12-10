@@ -100,6 +100,18 @@ def check_file(content):
 
     return True
 
+def parse_offsets(values):
+    offsets = []
+    for i in values:
+        if get_id(i[0]) == 0x33:
+            offsets.append(i[1])
+    return offsets
+
+def adjust_value_segment_offsets(values, offset_offset):
+    for i in range(len(values)):
+        values[i][1] = values[i][1] + offset_offset
+    return values
+
 def get_offsets(content):
 
     scenario_data_offset = int.from_bytes(content[0x17:0x17 + 2], "big")
@@ -284,28 +296,29 @@ def main(prefix = None):
     string_object = []
     for i in range(len(strings)):
         try:
-            decoded = strings[i].decode("shift-jis")
+            decoded = strings[i][1].decode("shift-jis")
         except UnicodeDecodeError:
             continue
-        string_object.append([i, decoded])
+        string_object.append([i, strings[i][0], decoded])
 
     if len(input("Export?: ")) > 0:
-        with open("strings", "w") as f: f.write(json.dumps([i[1] for i in string_object], ensure_ascii=False))
-        with open("indexes", "w") as f: f.write(json.dumps([i[0] for i in string_object]))
+        with open("strings", "w") as f: f.write(json.dumps(string_object, ensure_ascii=False))
 
     if len(input("Import?: ")) > 0:
-        with open("strings", "r") as f: strings_values = [i.encode("shift-jis") for i in json.loads(f.read())]
-        with open("indexes", "r") as f: indexes = json.loads(f.read())
-        string_object = [i for i in zip(indexes, strings_values)]
+        with open("strings", "r") as f: string_object = json.loads(f.read())
         for i in string_object:
-            strings[i[0]] = i[1]
+            strings[i[0]] = [i[1], i[2].encode("shift-jis")]
     else:
         print("Quitting.")
         return
 
     values = update_data_with_new_strings(values, strings)
 
-    offsets = get_offsets(headers)
+    offsets = parse_offsets(values)
+    orig_offsets_count = len(get_offsets(headers))
+    new_offset_count = len(offsets)
+    if orig_offsets_count != new_offset_count:
+        print("Warning: Changing amount of offsets.")
     content = create_content(offsets, values)
 
 
@@ -326,33 +339,63 @@ def main(prefix = None):
 #     return filtered_data
 
 def extract_strings(data):
-    strings = [item for item in data if get_id(item[0]) == 0x33]
+    strings = []
+    for i in data:
+        if i[0][0].startswith(b"\x0A\x0D\x34\xFF\x02\x01\xFF\x01"):
+            strings.append(i)
+        if get_id(i[0]) == 0x33:
+            strings.append(i)
     new_strings = []
 
     for current in strings:
         # if len(current) < 2:
         #     continue
         value = current[0][0]
-        value = value[value.index(b"\\n") + 2:]
-        value = value[:value.index(b"\x00")]
+        if get_id(current[0]) == 0x33:
+            value = value[value.index(b"\\n") + 2:]
+            value = value[:value.index(b"\x00")]
+            value = [0, value]
+        else:
+            value = value[value.index(b"\x01\xff\x01") + 3:]
+            value = value[:value.index(b"\x00")]
+            value = [1, value]
         new_strings.append(value)
 
     return new_strings
 
 def update_data_with_new_strings(data, new_strings):
+    offsets = {}
+    new_string = new_strings.pop(0)
     for i in range(len(data)):
         current = data[i][0]
-        if get_id(current) == 0x33:
-            new_string = new_strings.pop(0)
-            value = current[0]
+        value = current[0]
+        orig_len = len(value)
+        if new_string[0] == 0 and get_id(current) == 0x33:
 
             start = value.index(b"\\n", 1) + 2
             end = value.index(b"\x00", start)
 
-            value = current[0]
             value = value[:start] + new_string + value[end:]
+            new_len = len(value)
             data[i][0][0] = value
-            data[i][1] = -1 # Change offset to -1 to indicate it's not accurate
+            offsets[i] = new_len - orig_len
+
+            new_string = new_strings.pop(0)
+        elif new_string[0] == 1 and current[0].startswith(b"\x0A\x0D\x34\xFF\x02\x01\xFF\x01"):
+
+            start = value.index(b"\x01\xff\x01") + 3
+            end = value.index(b"\x00", start)
+
+            value = value[:start] + new_string + value[end:]
+            new_len = len(value)
+            data[i][0][0] = value
+            offsets[i] = new_len - orig_len
+
+            new_string = new_strings.pop(0)
+    amount = 0
+    for i in range(len(data)):
+        data[i][1] += amount
+        amount += offsets.get(i, 0)
     return data
 
 
