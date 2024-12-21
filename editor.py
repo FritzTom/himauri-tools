@@ -232,10 +232,10 @@ def main(prefix = None):
         string_object.append([i, strings[i][0], decoded])
 
     if len(input("Export?: ")) > 0:
-        with open("strings", "w") as f: f.write(json.dumps(string_object, ensure_ascii=False, indent=4))
+        with open("strings", "w", encoding="utf-8") as f: f.write(json.dumps(string_object, ensure_ascii=False, indent=4))
 
     if len(input("Import?: ")) > 0:
-        with open("strings", "r") as f: string_object = json.loads(f.read())
+        with open("strings", "r", encoding="utf-8") as f: string_object = json.loads(f.read())
         for i in string_object:
             if i[1] == 0:
                 ie = []
