@@ -1,79 +1,6 @@
 
 import json, os
 
-def ex_import_texts(values, titles = None, ignore_titles = False):
-    while True:
-        inp = input("\x1b[42mi\x1b[0mmport, \x1b[42me\x1b[0mxport, \x1b[42mq\x1b[0muit ?: ")
-        if len(inp) < 1: continue
-        inp = inp.lower()
-        inp = inp[0]
-        if not inp in "qie":
-            print("Invalid input.")
-            continue
-        break
-    if inp == "q": return None
-    if inp == "e":
-        ng = 0
-        data = ""
-        for i in range(len(values)):
-            data += f"{i}: "
-            for j in range(len(values[i])):
-                if titles and titles[i][j]:
-                    name = titles[i][j]
-                else:
-                    name = ng
-                    ng += 1
-                data += f";N;{name};O;"
-                data += f"{values[i][j].decode('shift-jis', errors='ignore')};A;"
-            if data.endswith(";A;"):
-                data = data[:-3]
-            data += ";B;\n"
-        data = data[:-4]
-        with open("exported", "w", encoding="utf-8") as f:
-            f.write(data)
-        return None
-    ov = values
-    with open("exported", "r", encoding="utf-8") as f:
-        data = f.read()
-    data = data.split(";B;\n")
-    values = []
-    for i in range(len(data)):
-        if i != int(data[i].split(": ", 1)[0]):
-            print("Improperly ordered file.\nAborting!")
-            exit(1)
-        values.append([])
-        current_values = data[i].split(": ", 1)[1]
-        if len(current_values) > 0:
-            current_values = current_values.split(";A;")
-        else:
-            current_values = []
-        for j in range(len(current_values)):
-            value = current_values[j]
-            if not ignore_titles:
-                if value.startswith(";N;"):
-                    if not (titles and len(titles) > i and len(titles[i]) > j):
-                        print("Too many names.\nAborting!")
-                        exit(1)
-                    if value[3:].split(";O;")[0] != titles[i][j]:
-                        print("Invalid name.\nAborting!")
-                        exit(1)
-                elif titles and len(titles) > i and len(titles[i]) > j:
-                    print("Missing name.\nAborting!")
-                    exit(1)
-            if value.startswith(";N;"):
-                value = value.split(";O;", 1)[1]
-            values[i].append(value.encode("shift-jis"))
-        if i >= len(ov):
-            print("Too many entries.\nAborting!")
-            exit(1)
-        if len(values[i]) != len(ov[i]):
-            print("Invalid sub entry amount.\nAborting!")
-            exit(1)
-    if len(values) != len(ov):
-        print("Invalid length.\nAborting!")
-        exit(1)
-    return values
-
 def check_file(content):
     file_length = int.from_bytes(content[0x8:0x8 + 3], "big")
     if file_length != len(content):
@@ -275,8 +202,8 @@ def add_pointers(values):
 
 def main(prefix = None):
     while True:
-        file_path = "701.him"
-        #file_path = input("Enter the path to your binary file: ")  # Prompt for file path
+        #file_path = "701.him"
+        file_path = input("Enter the path to your binary file: ")  # Prompt for file path
         if prefix:
             file_path = os.path.join(prefix, file_path)
         if not os.path.isfile(file_path):
@@ -295,19 +222,28 @@ def main(prefix = None):
 
     string_object = []
     for i in range(len(strings)):
-        try:
-            decoded = strings[i][1].decode("shift-jis")
-        except UnicodeDecodeError:
-            continue
+        if strings[i][0] == 0:
+            decoded = []
+            for j in strings[i][1]:
+                decoded.append(j.decode("shift-jis", errors="ignore"))
+        else:
+            decoded = strings[i][1].decode("shift-jis", errors="ignore")
+
         string_object.append([i, strings[i][0], decoded])
 
     if len(input("Export?: ")) > 0:
-        with open("strings", "w") as f: f.write(json.dumps(string_object, ensure_ascii=False))
+        with open("strings", "w") as f: f.write(json.dumps(string_object, ensure_ascii=False, indent=4))
 
     if len(input("Import?: ")) > 0:
         with open("strings", "r") as f: string_object = json.loads(f.read())
         for i in string_object:
-            strings[i[0]] = [i[1], i[2].encode("shift-jis")]
+            if i[1] == 0:
+                ie = []
+                for j in i[2]:
+                    ie.append(j.encode("shift-jis"))
+            else:
+                ie = i[2].encode("shift-jis")
+            strings[i[0]] = [i[1], ie]
     else:
         print("Quitting.")
         return
@@ -352,11 +288,11 @@ def extract_strings(data):
         #     continue
         value = current[0][0]
         if get_id(current[0]) == 0x33:
-            value = value[value.index(b"\\n") + 2:]
+            value = value[value.index(b"\x00\x01") + 2:]
             value = value[:value.index(b"\x00")]
-            value = [0, value]
+            value = [0, value.split(b"\\n")]
         else:
-            value = value[value.index(b"\x01\xff\x01") + 3:]
+            value = value[value.index(b"\xff\x01") + 2:]
             value = value[:value.index(b"\x00")]
             value = [1, value]
         new_strings.append(value)
@@ -372,26 +308,31 @@ def update_data_with_new_strings(data, new_strings):
         orig_len = len(value)
         if new_string[0] == 0 and get_id(current) == 0x33:
 
-            start = value.index(b"\\n", 1) + 2
+            start = value.index(b"\x00\x01", 1) + 2
             end = value.index(b"\x00", start)
 
-            value = value[:start] + new_string + value[end:]
+            ne = b"\\n" + new_string[1][-1]
+            if len(new_string[1]) > 1:
+                ne = new_string[1][0] + ne
+            value = value[:start] + ne + value[end:]
             new_len = len(value)
             data[i][0][0] = value
             offsets[i] = new_len - orig_len
 
-            new_string = new_strings.pop(0)
+            if len(new_strings) > 0:
+                new_string = new_strings.pop(0)
         elif new_string[0] == 1 and current[0].startswith(b"\x0A\x0D\x34\xFF\x02\x01\xFF\x01"):
 
             start = value.index(b"\x01\xff\x01") + 3
             end = value.index(b"\x00", start)
 
-            value = value[:start] + new_string + value[end:]
+            value = value[:start] + new_string[1] + value[end:]
             new_len = len(value)
             data[i][0][0] = value
             offsets[i] = new_len - orig_len
 
-            new_string = new_strings.pop(0)
+            if len(new_string) > 0:
+                new_string = new_strings.pop(0)
     amount = 0
     for i in range(len(data)):
         data[i][1] += amount
