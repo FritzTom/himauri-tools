@@ -134,7 +134,8 @@ def create_content(offsets, values):
     return bytes(content)
 
 def split_content(content):
-    beginning_data = int.from_bytes(content[0x17:0x17 + 2], "big")
+    # beginning_data = int.from_bytes(content[0x17:0x17 + 2], "big")
+    beginning_data = 0x23
     return content[:beginning_data], content[beginning_data:], beginning_data
 
 def parse_data(data, offset_offset):

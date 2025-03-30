@@ -6,7 +6,8 @@ DEV_MODE = True
 
 def main():
     temp_folder = "temp"
-    main_file_path = "natsuscn.hxp"
+    main_file_path = "FD_001.HXP"
+    # main_file_path = input("File: ")
     if not DEV_MODE or len(input("Extract?: ")) > 0:
         extract_file(main_file_path, temp_folder)
 
